@@ -210,15 +210,132 @@ def _split_comma_author_chunk(chunk: str) -> List[str]:
     return [chunk]
 
 
+_TITLE_ABBREVIATIONS = {
+    "al",
+    "cf",
+    "dr",
+    "ed",
+    "eds",
+    "eg",
+    "eq",
+    "etc",
+    "fig",
+    "ie",
+    "jr",
+    "mr",
+    "mrs",
+    "ms",
+    "no",
+    "pp",
+    "sr",
+    "st",
+    "vol",
+    "vs",
+}
+
+
 def _venue_from_tail(tail: str) -> str:
     cleaned = _URL_RE.sub(" ", DOI_RE.sub(" ", tail or ""))
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .;，,")
+    cleaned = re.sub(r"^doi:?\s*", "", cleaned, flags=re.IGNORECASE)
     if not cleaned:
         return ""
-    volume = re.match(r"(.+?)\s+\d+\s*(?:\(|:)", cleaned)
-    if volume:
+    # ``Journal 24 (5)`` and the space-stripped ``Journal,18(4)``.
+    volume = re.match(r"(.+?)[\s,，]+\d+\s*(?:\(|:|：)", cleaned)
+    if volume and len(volume.group(1).strip(" .")) >= 2:
         return volume.group(1).strip(" .")
     return cleaned.split(".")[0].strip(" .")[:160]
+
+
+def _split_title_and_tail(rest: str) -> tuple:
+    """Split ``Title.Journal`` as well as ``Title. Journal``."""
+
+    for match in re.finditer(r"\.(?=\s*(?:[A-Z\u4e00-\u9fff]|arXiv\b|doi\b|https?:))", rest):
+        before = rest[: match.start()]
+        word = re.search(r"([A-Za-z]+)$", before)
+        if word and (len(word.group(1)) == 1 or word.group(1).lower() in _TITLE_ABBREVIATIONS):
+            continue
+        title = before.strip(" .“”\"'")
+        if len(title) >= 3:
+            return title, rest[match.end() :]
+    title, separator, tail = rest.partition(". ")
+    if not separator:
+        title, tail = rest, ""
+    return title.strip(" .“”\"'"), tail
+
+
+def _normalize_compact_author_year(text: str) -> str:
+    """Normalize ``(  2007  )`` and ``Surname I. M. Surname J. (2007).``."""
+
+    cleaned = re.sub(
+        r"\(\s*((?:19|20)\d{2}[a-z]?|n\.d\.)\s*\)",
+        lambda match: "(" + re.sub(r"\s+", "", match.group(1)) + ")",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return _insert_commas_between_initialed_authors(cleaned)
+
+
+def _insert_commas_between_initialed_authors(text: str) -> str:
+    match = re.match(
+        r"^(?P<body>.*?)\s*(?P<year>\((?:(?:19|20)\d{2}[a-z]?|n\.d\.)\))\.(?P<after>.*)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match or "," in match.group("body"):
+        return text
+    authors = _split_initialed_author_block(match.group("body"))
+    if not authors:
+        return text
+    if len(authors) == 1:
+        head = authors[0]
+    else:
+        head = ", ".join(authors[:-1]) + ", and " + authors[-1]
+    return f"{head} {match.group('year')}.{match.group('after')}"
+
+
+def _split_initialed_author_block(body: str) -> List[str]:
+    tokens = [token for token in body.replace("&", " ").split() if token.lower() != "and"]
+    if len(tokens) < 2:
+        return []
+    authors: List[List[str]] = []
+    current: List[str] = []
+    saw_initial = False
+
+    def is_initial(token: str) -> bool:
+        return bool(re.fullmatch(r"(?:[A-Z]\.)+", token))
+
+    def is_surname(token: str) -> bool:
+        return bool(re.fullmatch(r"[A-Z][\w'’\-]+", token))
+
+    for token in tokens:
+        if not is_initial(token) and not is_surname(token):
+            return []
+        if saw_initial and is_surname(token):
+            authors.append(current)
+            current = [token]
+            saw_initial = False
+        else:
+            current.append(token)
+            if is_initial(token):
+                saw_initial = True
+    if not current or not saw_initial:
+        return []
+    authors.append(current)
+    return [_comma_join_initials(author) for author in authors]
+
+
+def _comma_join_initials(tokens: List[str]) -> str:
+    parts = list(tokens)
+    initials: List[str] = []
+    while parts and re.fullmatch(r"(?:[A-Z]\.)+", parts[-1]):
+        initials.append(parts.pop())
+    initials.reverse()
+    surname = " ".join(parts).strip()
+    if not surname or not initials:
+        return " ".join(tokens)
+    return f"{surname}, {' '.join(initials)}"
 
 
 def _year_anchor_outside_identifier(text: str, pattern: re.Pattern) -> Optional[re.Match]:
@@ -234,7 +351,7 @@ def _year_anchor_outside_identifier(text: str, pattern: re.Pattern) -> Optional[
 def parse_author_date_reference(text: str) -> Optional[Dict[str, Any]]:
     """Parse APA ``Author (Year). Title.`` and Chicago ``Author. Year. "Title."`` references."""
 
-    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = _normalize_compact_author_year(re.sub(r"\s+", " ", (text or "").strip()))
     if not cleaned or not re.search(r"[A-Za-z]", cleaned):
         return None
     apa = _year_anchor_outside_identifier(cleaned, _AUTHOR_DATE_APA_RE)
@@ -264,9 +381,7 @@ def parse_author_date_reference(text: str) -> Optional[Dict[str, Any]]:
             title = rest[1:end].strip()
             tail = rest[end + 1 :]
     if not title:
-        title, separator, tail = rest.partition(". ")
-        if not separator:
-            title, tail = rest, ""
+        title, tail = _split_title_and_tail(rest)
     title = title.strip(" .“”\"'")
     if len(title) < 3:
         return None

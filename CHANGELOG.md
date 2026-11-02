@@ -25,6 +25,19 @@ copyright notice is unchanged. This version is not published to PyPI.
 - Crossref titles and venues unescape HTML entities such as `&amp;`.
 - The MCP dependency is pinned to `mcp>=1.2,<2` because MCP SDK 2.x removed
   `FastMCP` and the server failed on import.
+- PDF text follows pypdf's reading order. Sorting by raw text-matrix coordinates
+  interleaved two-column pages, so reference lines were mixed with the article
+  body and with the opposite column.
+- Plain-text two-column bibliographies reflow on a consistent gutter, including
+  lines that contain only the right column.
+- Space-stripped APA used by Chinese journal HTML (`Surname,I.(2011).Title.Journal`)
+  and Frontiers HTML (`Surname I. M. ( 2007 ). Title`) are split and parsed.
+  A contents-page `References` link no longer makes the article body look like
+  the bibliography. A wrapped DOI such as `10.1177/…` is not treated as
+  numbered reference 10.
+- A record that repeats a title but has no author and no year stays
+  `ambiguous` instead of a confident miss. A journal article that reuses a
+  book title under a different first author is not offered as the book.
 
 ## 0.1.3 - 2026-07-15
 

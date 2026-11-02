@@ -31,8 +31,8 @@ def _field_diffs(candidate: CitationRecord, canonical: CitationRecord) -> List[F
     if candidate.metadata.get("title_explicit"):
         matches = sequence_similarity(candidate.title, canonical.title) >= TITLE_MATCH
         diffs.append(FieldDiff("title", candidate.title, canonical.title, matches))
-    if candidate.authors:
-        if canonical.authors and not author_lists_comparable(candidate.authors, canonical.authors):
+    if candidate.authors and canonical.authors:
+        if not author_lists_comparable(candidate.authors, canonical.authors):
             matches = True
         else:
             matches = (
@@ -40,7 +40,7 @@ def _field_diffs(candidate: CitationRecord, canonical: CitationRecord) -> List[F
                 and first_authors_match(candidate.authors, canonical.authors)
             )
         diffs.append(FieldDiff("authors", candidate.authors, canonical.authors, matches))
-    if candidate.year is not None:
+    if candidate.year is not None and canonical.year is not None:
         diffs.append(
             FieldDiff("year", candidate.year, canonical.year, year_matches(candidate.year, canonical.year))
         )
@@ -162,6 +162,10 @@ def verify_citation(
             "book_review": (
                 "The closest record looks like a review of the cited work rather than the work itself; "
                 "no corrected citation is suggested."
+            ),
+            "sparse_record": (
+                "The closest record repeats the title but has no author or year, so this is not a "
+                "confirmed match and no corrected citation is suggested."
             ),
         }
         base_explanation = ambiguity_explanations.get(

@@ -27,15 +27,16 @@ _REFERENCE_START_RE = re.compile(
     r"|[\u4e00-\u9fff·].{0,40}[(（](?:19|20)\d{2}[)）]"
     r")"
 )
-_COLUMN_GAP_RE = re.compile(r"^(?P<left>.*\S)\s{8,}(?P<right>\S.*)$")
 _RUNNING_HEADER_RE = re.compile(
     r"^(?:\d{1,4}\s+[A-Z][A-Z .,'’\-]{3,}|[A-Z][A-Z .,'’\-]{3,}\s+\d{1,4}|\d{1,4})$"
 )
 _GLUED_REF_START_RE = re.compile(
-    r"[\u4e00-\u9fff·][^。\n]{0,24}?[(（](?:19|20)\d{2}[)）]|[A-Z][\w'’\-]+,\s*[A-Z]"
+    r"[\u4e00-\u9fff·][^。\n]{0,24}?[(（](?:19|20)\d{2}[)）]"
+    r"|[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)*,\s*[A-Z]"
 )
 NEXT_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s+\S|\\(?:section|chapter|subsection)\*?\{.+\})")
-REFERENCE_ITEM_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)]|\-\s+|\*\s+)\s*(.+)$")
+# ``10. Author`` is a numbered reference. ``10.1177/...`` is a wrapped DOI, not item 10.
+REFERENCE_ITEM_RE = re.compile(r"^\s*(?:\[\d+\]|\d+(?:\)|\.(?!\d))|\-\s+|\*\s+)\s*(.+)$")
 BIBTEX_ENTRY_RE = re.compile(r"@\w+\s*[\{\(]\s*([^,\s]+)\s*,(.*?)(?=\n\s*@\w+\s*[\{\(]|\Z)", re.DOTALL)
 BIBTEX_STRING_RE = re.compile(r"@string\s*[\{\(]\s*([^=,\s]+)\s*=\s*(.*?)(?=\n\s*@\w+\s*[\{\(]|\Z)", re.DOTALL | re.IGNORECASE)
 BIBITEM_RE = re.compile(
@@ -151,75 +152,17 @@ def read_pdf_text(path: str) -> str:
 
 
 def _pdf_page_text(page: Any) -> str:
-    fragments: List[Tuple[float, float, str]] = []
+    """Return the page in content-stream order.
 
-    def visitor(text: str, _cm: Any, tm: Any, _font: Any, _size: Any) -> None:
-        if text and text.strip():
-            fragments.append((float(tm[4]), float(tm[5]), text))
+    Sorting fragments by the raw text-matrix y coordinate interleaves columns
+    on publisher PDFs whose stream order is already the reading order. pypdf's
+    own extractor follows that order, so two-column reference lists stay intact.
+    """
 
     try:
-        page.extract_text(visitor_text=visitor)
-    except Exception:
-        fragments = []
-    if not fragments:
         return page.extract_text() or ""
-    mediabox = getattr(page, "mediabox", None)
-    width = float(mediabox.width) if mediabox is not None else 0.0
-    columns = _pdf_column_bounds(fragments, width)
-    blocks = []
-    for start, end in columns:
-        column_frags = [frag for frag in fragments if start <= frag[0] < end]
-        blocks.append(_pdf_fragments_to_text(column_frags))
-    return "\n".join(block for block in blocks if block.strip())
-
-
-def _pdf_column_bounds(fragments: List[Tuple[float, float, str]], width: float) -> List[Tuple[float, float]]:
-    xs = sorted(frag[0] for frag in fragments)
-    best: Optional[Tuple[float, float]] = None
-    for index in range(len(xs) - 1):
-        gap = xs[index + 1] - xs[index]
-        if gap < 48:
-            continue
-        left = index + 1
-        right = len(xs) - left
-        if left < 8 or right < 8:
-            continue
-        if best is None or gap > best[0]:
-            best = (gap, (xs[index] + xs[index + 1]) / 2)
-    if best is None:
-        return [(float("-inf"), width or float("inf"))]
-    right_edge = width if width else float("inf")
-    return [(float("-inf"), best[1]), (best[1], right_edge if right_edge > best[1] else float("inf"))]
-
-
-def _pdf_fragments_to_text(fragments: List[Tuple[float, float, str]]) -> str:
-    if not fragments:
+    except Exception:
         return ""
-    lines: List[Tuple[float, List[Tuple[float, str]]]] = []
-    for x_pos, y_pos, text in sorted(fragments, key=lambda item: (-item[1], item[0])):
-        if lines and abs(lines[-1][0] - y_pos) <= 2.5:
-            lines[-1][1].append((x_pos, text))
-        else:
-            lines.append((y_pos, [(x_pos, text)]))
-    rendered = []
-    for _y_pos, chunks in lines:
-        ordered = [text for _x, text in sorted(chunks, key=lambda item: item[0])]
-        rendered.append(_join_pdf_chunks(ordered))
-    return "\n".join(line for line in rendered if line.strip())
-
-
-def _join_pdf_chunks(chunks: List[str]) -> str:
-    parts: List[str] = []
-    for text in chunks:
-        if not parts:
-            parts.append(text)
-            continue
-        if parts[-1].endswith((" ", "-", "‐", "/")) or text.startswith(" "):
-            parts.append(text)
-        else:
-            parts.append(" ")
-            parts.append(text)
-    return "".join(parts).strip()
 
 
 def _read_html_text(path: str) -> str:
@@ -472,26 +415,76 @@ def _reflow_reference_section(lines: List[str]) -> List[str]:
 
 
 def _reflow_two_column_lines(lines: List[str]) -> List[str]:
-    content = [line for line in lines if line.strip()]
-    if len(content) < 4:
-        return lines
-    split_count = 0
-    for line in content:
-        match = _COLUMN_GAP_RE.match(line)
-        if match and len(match.group("left").strip()) >= 15 and len(match.group("right").strip()) >= 15:
-            split_count += 1
-    if split_count / len(content) < 0.35:
+    """Split a gutter-aligned reference section into left column, then right column.
+
+    Lines that contain only the right column (a large indent and no left-hand
+    text) used to be appended to the left column, which glued the two columns
+    together on Frontiers-style plain text.
+    """
+
+    gutter = _reference_column_gutter(lines)
+    if gutter is None:
         return lines
     left: List[str] = []
     right: List[str] = []
     for line in lines:
-        match = _COLUMN_GAP_RE.match(line)
-        if match and len(match.group("left").strip()) >= 15 and len(match.group("right").strip()) >= 15:
-            left.append(match.group("left").rstrip())
-            right.append(match.group("right").rstrip())
-        else:
-            left.append(line)
+        if not line.strip():
+            if left and left[-1] != "":
+                left.append("")
+            if right and right[-1] != "":
+                right.append("")
+            continue
+        left_text, right_text = _split_gutter_line(line, gutter)
+        if left_text:
+            left.append(left_text)
+        if right_text:
+            right.append(right_text)
+    while left and left[-1] == "":
+        left.pop()
+    while right and right[-1] == "":
+        right.pop()
+    if not any(part.strip() for part in right):
+        return lines
     return left + [""] + right
+
+
+def _reference_column_gutter(lines: List[str]) -> Optional[int]:
+    starts: List[int] = []
+    nonempty = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        nonempty += 1
+        for match in re.finditer(r"\s{8,}(?=\S)", line):
+            if match.start() >= 12:
+                starts.append(match.end())
+        indent = len(line) - len(line.lstrip(" "))
+        if indent >= 40:
+            starts.append(indent)
+    if nonempty < 4 or len(starts) < 3:
+        return None
+    buckets: Dict[int, int] = {}
+    for start in starts:
+        bucket = (start // 5) * 5
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+    gutter = max(buckets, key=buckets.get)
+    support = sum(count for bucket, count in buckets.items() if abs(bucket - gutter) <= 5)
+    if support < 3 or support / nonempty < 0.30:
+        return None
+    return gutter
+
+
+def _split_gutter_line(line: str, gutter: int) -> Tuple[str, str]:
+    for match in re.finditer(r"\s{8,}(?=\S)", line):
+        if match.start() < 12:
+            continue
+        right_start = match.end()
+        if abs(right_start - gutter) <= 10:
+            return line[: match.start()].rstrip(), line[match.end() :].strip()
+    indent = len(line) - len(line.lstrip(" "))
+    if indent + 2 >= gutter:
+        return "", line.strip()
+    return line.rstrip(), ""
 
 
 def _is_running_header(line: str) -> bool:
@@ -499,8 +492,24 @@ def _is_running_header(line: str) -> bool:
     return bool(_RUNNING_HEADER_RE.match(stripped))
 
 
+_COMPACT_APA_START_RE = re.compile(
+    r"^[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)*,\s*[A-Z].{0,300}?\(\s*(?:n\.d\.|(?:19|20)\d{2})\s*\)",
+    re.IGNORECASE,
+)
+_INITIALED_LINE_START_RE = re.compile(
+    r"^(?:[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)*\s+(?:[A-Z]\.\s*)+)+\(\s*(?:n\.d\.|(?:19|20)\d{2})\s*\)",
+    re.IGNORECASE,
+)
+
+
 def _is_reference_start(text: str) -> bool:
-    return bool(_REFERENCE_START_RE.match(text.strip()))
+    stripped = re.sub(r"\s+", " ", text.strip())
+    if _REFERENCE_START_RE.match(stripped):
+        return True
+    # ``Bock,M.A.(2020).`` and ``Ariyanto A. M. ( 2007 ).`` are references too.
+    if _COMPACT_APA_START_RE.match(stripped):
+        return True
+    return bool(_INITIALED_LINE_START_RE.match(stripped))
 
 
 def _split_glued_references(text: str) -> List[str]:
@@ -513,9 +522,10 @@ def _split_glued_references(text: str) -> List[str]:
         if match.start() <= 0:
             continue
         lookback = text[max(0, match.start() - 12) : match.start()]
-        # ``R. Abebe`` is an initial inside an author list, not a new reference.
-        sentence_dot = bool(re.search(r"[A-Za-z]{2,}\.\s+$", lookback))
-        if re.search(r"[。；;]\s*$", lookback) or sentence_dot or re.search(r"\s{2,}$", lookback):
+        # ``R. Abebe`` is an initial, not a new reference. ``2. Surname`` after a DOI is.
+        sentence_dot = bool(re.search(r"[A-Za-z]{2,}\.\s*$", lookback))
+        page_or_doi_dot = bool(re.search(r"\d\.\s*$", lookback))
+        if re.search(r"[。；;]\s*$", lookback) or sentence_dot or page_or_doi_dot or re.search(r"\s{2,}$", lookback):
             cuts.append(match.start())
     cuts.append(len(text))
     parts = [text[cuts[index] : cuts[index + 1]].strip(" ;") for index in range(len(cuts) - 1)]
@@ -547,9 +557,14 @@ def _extract_reference_lines(text: str) -> List[dict]:
 
     for line_number, line in enumerate(lines, start=1):
         if REFERENCE_HEADING_RE.match(line):
+            # A contents-page "References" link often precedes the real bibliography.
+            # Keep the last heading and drop citations collected from the article body.
+            if saw_reference_heading:
+                items.clear()
+            else:
+                _flush_reference_item(items, current, current_start, current_end)
             in_refs = True
             saw_reference_heading = True
-            _flush_reference_item(items, current, current_start, current_end)
             current = []
             current_start = None
             current_end = None

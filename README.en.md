@@ -23,6 +23,8 @@ Upstream CiteGuard (Wenyao Xu, https://github.com/xiaweiyi713/citeguard) supplie
 - Verification compares authors by surname and initials, requires the cited first author to match, and reports a DOI that points at a different paper against the work named by the title. Book-review records are not suggested as a correction for the book.
 - Crossref titles and venues unescape HTML entities such as `&amp;`.
 - The MCP SDK is pinned to `mcp>=1.2,<2`. MCP 2.x removed `FastMCP`, so an unpinned install crashed the server on import.
+- PDF text follows pypdf's reading order. Sorting by raw text-matrix y interleaved two-column pages. Plain-text two-column bibliographies, including right-column-only lines, are reflowed.
+- Space-stripped APA from Chinese journal HTML (`Surname,I.(2011).Title.Journal`) and Frontiers pages (`Surname I. ( 2007 ).`) are split and parsed. A contents-page `References` link no longer treats the article body as the bibliography. A title-only record with no author and no year stays `ambiguous`, and a journal article that reuses a book title is not suggested as the book.
 
 ---
 

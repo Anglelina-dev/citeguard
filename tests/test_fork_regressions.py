@@ -308,12 +308,175 @@ class MetadataVerdictTests(unittest.TestCase):
         self.assertIn("review", review_only.explanation.lower())
 
 
+class CompactBibliographyTests(unittest.TestCase):
+    def test_space_stripped_apa_keeps_the_title_out_of_the_journal(self):
+        record = parse_citation(
+            raw_text=(
+                "Bock,M.A.(2020).Theorising visual framing:Contingency,materiality and ideology."
+                "Visual Studies,35(1),1-12.doi:10.1080/1472586X.2020.1715244."
+            )
+        )
+        self.assertEqual(record.title, "Theorising visual framing:Contingency,materiality and ideology")
+        self.assertEqual(record.authors, ["Bock, M.A."])
+        self.assertEqual(record.venue, "Visual Studies")
+        self.assertEqual(record.year, 2020)
+        self.assertEqual(record.doi, "10.1080/1472586x.2020.1715244")
+
+    def test_glued_compact_apa_references_split_after_a_doi(self):
+        text = (
+            "参考文献(References)： "
+            "周勇、黄雅兰(2012):从图像到舆论：网络传播中的视觉形象建构与意义生成，《国际新闻界》,第34卷第9期，82-90页。 "
+            "Anne DiFrancesco,D.& Young,N.(2011).Seeing climate change:The visual construction of global warming "
+            "in Canadian national print media.Cultural Geographies,18(4),517-536.doi:10.1177/1474474010382072. "
+            "Bock,M.A.(2020).Theorising visual framing:Contingency,materiality and ideology."
+            "Visual Studies,35(1),1-12.doi:10.1080/1472586X.2020.1715244."
+        )
+        candidates = extract_citation_candidates(text, source_format="text")
+        titles = [item.get("title", "") for item in candidates]
+        self.assertEqual(len(candidates), 3)
+        self.assertIn("从图像到舆论：网络传播中的视觉形象建构与意义生成", titles)
+        self.assertIn("Seeing climate change:The visual construction of global warming in Canadian national print media", titles)
+        self.assertIn("Theorising visual framing:Contingency,materiality and ideology", titles)
+
+    def test_frontiers_spaced_authors_parse(self):
+        record = parse_citation(
+            raw_text=(
+                "Ariyanto      A. M.              Hornsey      J.              Gallois      C.           "
+                "(  2007  ).   Group allegiances and perceptions of media bias.   Group Process.    "
+                "10  ,   266  –  279  . doi:   10.1177/1368430207074733"
+            )
+        )
+        self.assertEqual(record.authors[0], "Ariyanto, A. M.")
+        self.assertIn("Hornsey, J.", record.authors)
+        self.assertEqual(record.year, 2007)
+        self.assertEqual(record.title, "Group allegiances and perceptions of media bias")
+        self.assertEqual(record.doi, "10.1177/1368430207074733")
+
+    def test_contents_page_references_heading_does_not_swallow_the_article(self):
+        text = "\n".join(
+            [
+                "References",
+                "Figures and Tables",
+                "The development of generative AI shifted how people interact (Böhm et al., 2023).",
+                "References",
+                "Ariyanto      A. M.              Gallois      C.           (  2007  ).   Group allegiances and perceptions of media bias. Group Process.",
+                "CrossRef",
+                "Bock, M. A. (2020). Theorising visual framing. Visual Studies.",
+            ]
+        )
+        candidates = extract_citation_candidates(text, source_format="text")
+        raw = " ".join(item["raw_text"] for item in candidates)
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertNotIn("generative AI", raw)
+        self.assertTrue(any(item.get("title") == "Group allegiances and perceptions of media bias" for item in candidates))
+
+    def test_right_column_only_lines_stay_with_the_right_column(self):
+        text = "\n".join(
+            [
+                "References",
+                "Ariyanto, A. M., Hornsey, J., and Gallois, C. (2007). Group allegiances and perceptions             Giner-Sorolla, R., and Chaiken, S. (1994). The causes of hostile media judgments.",
+                "of media bias: taking into account both the perceiver and the source. Group Process.                Exp. Soc. Psychol. 30, 165–180. doi: 10.1006/jesp.1994.1008",
+                "Intergroup Relat. 10, 266–279. doi: 10.1177/1368430207074733",
+                "                                                                                                      Graefe, A., and Bohlken, N. (2020). Automated journalism: a meta-analysis.",
+                "Arpan, L. M., and Raney, A. A. (2003). An experimental investigation of news source               Media Commun. 8, 50–59. doi: 10.17645/mac.v8i3.3019",
+                "and the hostile media effect. Journal. Mass Commun. Quart. 80, 265–281. doi:",
+                "10.1177/107769900308000203",
+            ]
+        )
+        candidates = extract_citation_candidates(text, source_format="text")
+        raws = [item["raw_text"] for item in candidates]
+        self.assertTrue(any("Ariyanto" in raw and "Giner-Sorolla" not in raw and "Graefe" not in raw for raw in raws))
+        self.assertTrue(any("Giner-Sorolla" in raw and "10.1006/jesp.1994.1008" in raw for raw in raws))
+        self.assertTrue(any(raw.startswith("Graefe, A.") for raw in raws))
+        self.assertTrue(any("Arpan" in raw and "10.1177/107769900308000203" in raw and "Giner-Sorolla" not in raw for raw in raws))
+
+
+class PdfReadingOrderTests(unittest.TestCase):
+    def test_content_stream_order_beats_raw_text_matrix_y(self):
+        stream = "\n".join(
+            [
+                "BT /F1 12 Tf 72 500 Td (Body sentence about false information from 1999.) Tj ET",
+                "BT /F1 12 Tf 72 700 Td (References) Tj ET",
+                "BT /F1 11 Tf 72 680 Td (Abels, Grace. 2024. What PolitiFact Learned in Fact-Checks. Poynter.) Tj ET",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "columns.pdf"
+            path.write_bytes(_minimal_pdf(stream))
+            candidates = load_citation_candidates(str(path))
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("What PolitiFact Learned", candidates[0]["raw_text"])
+        self.assertNotIn("false information", candidates[0]["raw_text"])
+
+
+class SparseBookRecordTests(unittest.TestCase):
+    def test_title_only_index_record_is_ambiguous_not_missing(self):
+        dataset = CitationRecord(
+            citation_id="shafr",
+            title="The Whole World Is Watching: Mass Media in the Making & Unmaking of the New Left",
+            authors=[],
+            year=None,
+            source="crossref",
+            metadata={"type": "dataset"},
+        )
+        result = verify_citation(parse_citation(raw_text=GITLIN), InMemoryMetadataSource([dataset]))
+        self.assertEqual(result.verdict, Verdict.AMBIGUOUS)
+        self.assertEqual(result.suggested_citation, "")
+        self.assertIn("author", result.explanation.lower())
+
+    def test_journal_article_that_reuses_a_book_title_is_not_suggested(self):
+        review = CitationRecord(
+            citation_id="review-article",
+            title="The Whole World Is Watching: Mass Media in the Making and (Un)making of the New Left",
+            authors=["Cyril Levitt", "Todd Gitlin"],
+            year=1981,
+            venue="Contemporary Sociology",
+            source="crossref",
+            metadata={"type": "journal-article"},
+        )
+        result = verify_citation(parse_citation(raw_text=GITLIN), InMemoryMetadataSource([review]))
+        self.assertEqual(result.verdict, Verdict.AMBIGUOUS)
+        self.assertEqual(result.suggested_citation, "")
+        self.assertIn("review", result.explanation.lower())
+
+
 class McpDependencyTests(unittest.TestCase):
     def test_mcp2_rename_is_reported_as_an_incompatible_pin(self):
         message = mcp_dependency_message(
             ModuleNotFoundError("FastMCP was renamed to MCPServer in mcp 2.x")
         )
         self.assertIn("mcp>=1.2,<2", message)
+
+
+def _minimal_pdf(stream: str) -> bytes:
+    """Build a one-page PDF whose content-stream order differs from text-matrix y."""
+
+    stream_bytes = stream.encode("latin-1")
+    objects = [
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n",
+        f"4 0 obj << /Length {len(stream_bytes)} >> stream\n".encode("latin-1")
+        + stream_bytes
+        + b"\nendstream\nendobj\n",
+        b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+    ]
+    header = b"%PDF-1.4\n"
+    chunks = [header]
+    offsets = []
+    cursor = len(header)
+    for obj in objects:
+        offsets.append(cursor)
+        chunks.append(obj)
+        cursor += len(obj)
+    xref = [f"xref\n0 {len(objects) + 1}\n".encode("latin-1"), b"0000000000 65535 f \n"]
+    for offset in offsets:
+        xref.append(f"{offset:010d} 00000 n \n".encode("latin-1"))
+    trailer = (
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{cursor}\n%%EOF\n".encode("latin-1")
+    )
+    return b"".join(chunks + xref + [trailer])
 
 
 if __name__ == "__main__":

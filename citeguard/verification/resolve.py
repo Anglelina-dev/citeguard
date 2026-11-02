@@ -93,10 +93,31 @@ def citation_looks_like_review(candidate: CitationRecord) -> bool:
     return bool(_REVIEW_CITATION_RE.search(text))
 
 
+def citation_looks_like_book(candidate: CitationRecord) -> bool:
+    """True for a publisher citation that is not already pinned by a DOI or arXiv id."""
+
+    if candidate.doi or candidate.arxiv_id:
+        return False
+    blob = f"{candidate.venue} {candidate.metadata.get('raw_text', '')}".lower()
+    return any(token in blob for token in (" press", "出版社", "publisher"))
+
+
 def unwanted_book_review(candidate: CitationRecord, record: CitationRecord) -> bool:
     """A review record should not stand in for the book it reviews."""
 
-    if not is_book_review_record(record) or citation_looks_like_review(candidate):
+    if citation_looks_like_review(candidate):
+        return False
+    record_type = str((record.metadata or {}).get("type") or "").lower().replace("_", "-")
+    if (
+        citation_looks_like_book(candidate)
+        and record_type in {"journal-article", "article"}
+        and candidate.authors
+        and record.authors
+        and not first_authors_match(candidate.authors, record.authors)
+        and sequence_similarity(candidate.title, record.title) >= 0.85
+    ):
+        return True
+    if not is_book_review_record(record):
         return False
     if candidate.authors and first_authors_match(candidate.authors, record.authors) and author_coverage(
         candidate.authors, record.authors
@@ -115,9 +136,17 @@ def verification_match_score(candidate: CitationRecord, record: CitationRecord) 
     if _identifier_same(candidate, record) and not titles_conflict(candidate, record):
         return 1.0
     title = sequence_similarity(candidate.title, record.title)
-    author = author_coverage(candidate.authors, record.authors)
-    year = 1.0 if year_matches(candidate.year, record.year) else 0.0
-    return 0.70 * title + 0.18 * author + 0.12 * year
+    # Missing author or year on the record is unknown, not a disagreement.
+    # Penalizing it dropped exact book titles under the match threshold.
+    weighted = [(0.70, title)]
+    if candidate.authors and record.authors:
+        weighted.append((0.18, author_coverage(candidate.authors, record.authors)))
+    if candidate.year is not None and record.year is not None:
+        weighted.append((0.12, 1.0 if year_matches(candidate.year, record.year) else 0.0))
+    total = sum(weight for weight, _value in weighted)
+    if total <= 0:
+        return 0.0
+    return sum(weight * value for weight, value in weighted) / total
 
 
 def source_names(source: MetadataSource) -> List[str]:
@@ -320,6 +349,16 @@ def resolve_citation(candidate: CitationRecord, source: MetadataSource) -> Resol
             ambiguous, ambiguity_reason = True, "year_conflict"
         elif best is not None and is_suspect_record(best):
             ambiguous, ambiguity_reason = True, (ambiguity_reason or "suspect_record")
+    if (
+        best is not None
+        and best_score >= STRONG_MATCH
+        and candidate.authors
+        and not best.authors
+        and candidate.year is not None
+        and best.year is None
+        and not (candidate.doi or candidate.arxiv_id)
+    ):
+        ambiguous, ambiguity_reason = True, "sparse_record"
     if best is not None and unwanted_book_review(candidate, best):
         ambiguous, ambiguity_reason = True, "book_review"
     return ResolveOutcome(
