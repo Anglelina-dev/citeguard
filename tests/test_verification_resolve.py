@@ -80,9 +80,13 @@ class ResolveTests(unittest.TestCase):
         score = verification_match_score(candidate, self.openscholar)
         self.assertGreaterEqual(score, STRONG_MATCH)
 
-    def test_doi_match_is_definitive(self):
-        candidate = parse_citation(title="Totally Different Title", doi="10.48550/arXiv.2411.14199")
+    def test_doi_match_is_definitive_when_the_title_agrees(self):
+        candidate = parse_citation(title=self.openscholar.title, doi="10.48550/arXiv.2411.14199")
         self.assertEqual(verification_match_score(candidate, self.openscholar), 1.0)
+
+    def test_conflicting_explicit_title_does_not_let_a_doi_short_circuit(self):
+        candidate = parse_citation(title="Totally Different Title", doi="10.48550/arXiv.2411.14199")
+        self.assertLess(verification_match_score(candidate, self.openscholar), 0.7)
 
     def test_resolve_returns_best_match(self):
         candidate = parse_citation(title=self.openscholar.title, year=2024)

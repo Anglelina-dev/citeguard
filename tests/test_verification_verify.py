@@ -207,6 +207,8 @@ class RateLimitedMetadataSource(InMemoryMetadataSource):
     def lookup(self, candidate):
         raise TimeoutError("source timed out")
 
+
+class RegisteredDoiProbeTests(unittest.TestCase):
     def test_not_found_with_registered_doi_reports_registration_not_fabrication(self):
         class RegisteredProbe:
             def check(self, doi):

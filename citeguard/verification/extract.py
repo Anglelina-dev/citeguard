@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import zipfile
@@ -9,11 +10,29 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from xml.etree import ElementTree
 
-from .parse import extract_arxiv_id, extract_doi, extract_year, parse_gbt7714_reference
+from .parse import extract_arxiv_id, extract_doi, extract_year, parse_structured_reference
 
 REFERENCE_HEADING_RE = re.compile(
-    r"^\s*(?:#{1,6}\s*)?(references|bibliography|works cited|参考文献)\s*$",
+    r"^\s*(?:#{1,6}\s*)?(references|bibliography|works cited|参考文献(?:\s*\(\s*references\s*\))?)\s*[:：]?\s*$",
     re.IGNORECASE,
+)
+_INLINE_REFERENCE_HEADING_RE = re.compile(
+    r"参考文献\s*(?:\(\s*references\s*\))?\s*[:：]?",
+    re.IGNORECASE,
+)
+_REFERENCE_START_RE = re.compile(
+    r"^(?:"
+    r"[A-Z][\w'’\-.]+,\s+(?:[A-Z]\.?|[A-Z][\w'’\-]+)"
+    r"|[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)*\.\s+(?:n\.d\.|(?:19|20)\d{2})"
+    r"|[\u4e00-\u9fff·].{0,40}[(（](?:19|20)\d{2}[)）]"
+    r")"
+)
+_COLUMN_GAP_RE = re.compile(r"^(?P<left>.*\S)\s{8,}(?P<right>\S.*)$")
+_RUNNING_HEADER_RE = re.compile(
+    r"^(?:\d{1,4}\s+[A-Z][A-Z .,'’\-]{3,}|[A-Z][A-Z .,'’\-]{3,}\s+\d{1,4}|\d{1,4})$"
+)
+_GLUED_REF_START_RE = re.compile(
+    r"[\u4e00-\u9fff·][^。\n]{0,24}?[(（](?:19|20)\d{2}[)）]|[A-Z][\w'’\-]+,\s*[A-Z]"
 )
 NEXT_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s+\S|\\(?:section|chapter|subsection)\*?\{.+\})")
 REFERENCE_ITEM_RE = re.compile(r"^\s*(?:\[\d+\]|\d+[.)]|\-\s+|\*\s+)\s*(.+)$")
@@ -36,7 +55,7 @@ def load_citation_candidates(path: str, source_format: str = "auto") -> List[dic
             source_path=path,
         )
 
-    text = Path(path).read_text(encoding="utf-8")
+    text = _read_manuscript_text(path, active_format)
     candidates = _annotate_source_path(
         extract_citation_candidates(text, source_format=active_format),
         source_path=path,
@@ -98,6 +117,132 @@ def _latex_input_paths(text: str, source_path: Path) -> List[Path]:
         seen.add(key)
         paths.append(candidate)
     return paths
+
+
+def read_pdf_text(path: str) -> str:
+    """Extract PDF text in column reading order. Raises OSError instead of crashing."""
+
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise OSError(
+            "PDF files require the optional pypdf package; install pypdf or provide a UTF-8 text file."
+        ) from exc
+    try:
+        reader = PdfReader(path)
+    except Exception as exc:
+        raise OSError(f"Could not read PDF {path!r}: {exc}") from exc
+    if getattr(reader, "is_encrypted", False):
+        try:
+            reader.decrypt("")
+        except Exception as exc:
+            raise OSError(f"Could not read encrypted PDF {path!r}: {exc}") from exc
+    pages: List[str] = []
+    errors = 0
+    for page in reader.pages:
+        try:
+            pages.append(_pdf_page_text(page))
+        except Exception:
+            errors += 1
+    text = "\n\n".join(part for part in pages if part and part.strip())
+    if not text and errors:
+        raise OSError(f"Could not extract text from PDF {path!r}")
+    return text
+
+
+def _pdf_page_text(page: Any) -> str:
+    fragments: List[Tuple[float, float, str]] = []
+
+    def visitor(text: str, _cm: Any, tm: Any, _font: Any, _size: Any) -> None:
+        if text and text.strip():
+            fragments.append((float(tm[4]), float(tm[5]), text))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except Exception:
+        fragments = []
+    if not fragments:
+        return page.extract_text() or ""
+    mediabox = getattr(page, "mediabox", None)
+    width = float(mediabox.width) if mediabox is not None else 0.0
+    columns = _pdf_column_bounds(fragments, width)
+    blocks = []
+    for start, end in columns:
+        column_frags = [frag for frag in fragments if start <= frag[0] < end]
+        blocks.append(_pdf_fragments_to_text(column_frags))
+    return "\n".join(block for block in blocks if block.strip())
+
+
+def _pdf_column_bounds(fragments: List[Tuple[float, float, str]], width: float) -> List[Tuple[float, float]]:
+    xs = sorted(frag[0] for frag in fragments)
+    best: Optional[Tuple[float, float]] = None
+    for index in range(len(xs) - 1):
+        gap = xs[index + 1] - xs[index]
+        if gap < 48:
+            continue
+        left = index + 1
+        right = len(xs) - left
+        if left < 8 or right < 8:
+            continue
+        if best is None or gap > best[0]:
+            best = (gap, (xs[index] + xs[index + 1]) / 2)
+    if best is None:
+        return [(float("-inf"), width or float("inf"))]
+    right_edge = width if width else float("inf")
+    return [(float("-inf"), best[1]), (best[1], right_edge if right_edge > best[1] else float("inf"))]
+
+
+def _pdf_fragments_to_text(fragments: List[Tuple[float, float, str]]) -> str:
+    if not fragments:
+        return ""
+    lines: List[Tuple[float, List[Tuple[float, str]]]] = []
+    for x_pos, y_pos, text in sorted(fragments, key=lambda item: (-item[1], item[0])):
+        if lines and abs(lines[-1][0] - y_pos) <= 2.5:
+            lines[-1][1].append((x_pos, text))
+        else:
+            lines.append((y_pos, [(x_pos, text)]))
+    rendered = []
+    for _y_pos, chunks in lines:
+        ordered = [text for _x, text in sorted(chunks, key=lambda item: item[0])]
+        rendered.append(_join_pdf_chunks(ordered))
+    return "\n".join(line for line in rendered if line.strip())
+
+
+def _join_pdf_chunks(chunks: List[str]) -> str:
+    parts: List[str] = []
+    for text in chunks:
+        if not parts:
+            parts.append(text)
+            continue
+        if parts[-1].endswith((" ", "-", "‐", "/")) or text.startswith(" "):
+            parts.append(text)
+        else:
+            parts.append(" ")
+            parts.append(text)
+    return "".join(parts).strip()
+
+
+def _read_html_text(path: str) -> str:
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    raw = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", raw)
+    raw = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", raw)
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</(?:p|div|li|tr|h[1-6])>", "\n", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    text = html.unescape(raw)
+    return re.sub(r"[ \t]+\n", "\n", text)
+
+
+def _read_manuscript_text(path: str, active_format: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix == ".pdf" or active_format == "pdf":
+        return read_pdf_text(path)
+    if suffix in {".html", ".htm"} or active_format in {"html", "htm"}:
+        return _read_html_text(path)
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise OSError(f"Could not read {path!r} as UTF-8 text: {exc}") from exc
 
 
 def extract_citation_candidates(text: str, source_format: str = "auto") -> List[dict]:
@@ -308,14 +453,97 @@ def _latex_bibliography_paths(text: str, source_path: str) -> List[Path]:
     return paths
 
 
+def _promote_inline_reference_heading(text: str) -> str:
+    """Turn ``参考文献(References)： <entries>`` into a heading plus a bibliography body."""
+
+    if any(REFERENCE_HEADING_RE.match(line) for line in text.splitlines()):
+        return text
+    match = _INLINE_REFERENCE_HEADING_RE.search(text)
+    if not match:
+        return text
+    return text[: match.start()] + "\nReferences\n" + text[match.end() :]
+
+
+def _reflow_reference_section(lines: List[str]) -> List[str]:
+    heading_index = next((index for index, line in enumerate(lines) if REFERENCE_HEADING_RE.match(line)), None)
+    if heading_index is None:
+        return lines
+    return lines[: heading_index + 1] + _reflow_two_column_lines(lines[heading_index + 1 :])
+
+
+def _reflow_two_column_lines(lines: List[str]) -> List[str]:
+    content = [line for line in lines if line.strip()]
+    if len(content) < 4:
+        return lines
+    split_count = 0
+    for line in content:
+        match = _COLUMN_GAP_RE.match(line)
+        if match and len(match.group("left").strip()) >= 15 and len(match.group("right").strip()) >= 15:
+            split_count += 1
+    if split_count / len(content) < 0.35:
+        return lines
+    left: List[str] = []
+    right: List[str] = []
+    for line in lines:
+        match = _COLUMN_GAP_RE.match(line)
+        if match and len(match.group("left").strip()) >= 15 and len(match.group("right").strip()) >= 15:
+            left.append(match.group("left").rstrip())
+            right.append(match.group("right").rstrip())
+        else:
+            left.append(line)
+    return left + [""] + right
+
+
+def _is_running_header(line: str) -> bool:
+    stripped = line.replace("\f", " ").strip()
+    return bool(_RUNNING_HEADER_RE.match(stripped))
+
+
+def _is_reference_start(text: str) -> bool:
+    return bool(_REFERENCE_START_RE.match(text.strip()))
+
+
+def _split_glued_references(text: str) -> List[str]:
+    """Split a paragraph that contains several references back-to-back."""
+
+    if not text:
+        return []
+    cuts = [0]
+    for match in _GLUED_REF_START_RE.finditer(text):
+        if match.start() <= 0:
+            continue
+        lookback = text[max(0, match.start() - 12) : match.start()]
+        # ``R. Abebe`` is an initial inside an author list, not a new reference.
+        sentence_dot = bool(re.search(r"[A-Za-z]{2,}\.\s+$", lookback))
+        if re.search(r"[。；;]\s*$", lookback) or sentence_dot or re.search(r"\s{2,}$", lookback):
+            cuts.append(match.start())
+    cuts.append(len(text))
+    parts = [text[cuts[index] : cuts[index + 1]].strip(" ;") for index in range(len(cuts) - 1)]
+    parts = [part for part in parts if part]
+    if len(parts) <= 1:
+        return parts
+    kept: List[str] = []
+    buffer = parts[0]
+    for part in parts[1:]:
+        if _looks_like_citation(part) or _is_reference_start(part):
+            kept.append(buffer.strip())
+            buffer = part
+        else:
+            buffer = f"{buffer} {part}"
+    kept.append(buffer.strip())
+    return [part for part in kept if part]
+
+
 def _extract_reference_lines(text: str) -> List[dict]:
-    lines = text.splitlines()
+    text = _promote_inline_reference_heading(text.replace("\f", "\n"))
+    lines = _reflow_reference_section(text.splitlines())
     items: List[Dict[str, Any]] = []
     in_refs = False
     saw_reference_heading = False
     current: List[str] = []
     current_start: Optional[int] = None
     current_end: Optional[int] = None
+    current_indent = 0
 
     for line_number, line in enumerate(lines, start=1):
         if REFERENCE_HEADING_RE.match(line):
@@ -325,10 +553,13 @@ def _extract_reference_lines(text: str) -> List[dict]:
             current = []
             current_start = None
             current_end = None
+            current_indent = 0
             continue
         if in_refs and NEXT_SECTION_RE.match(line) and not REFERENCE_ITEM_RE.match(line):
             break
         if not in_refs:
+            continue
+        if _is_running_header(line):
             continue
 
         stripped = line.strip()
@@ -337,14 +568,20 @@ def _extract_reference_lines(text: str) -> List[dict]:
             current = []
             current_start = None
             current_end = None
+            current_indent = 0
             continue
 
+        indent = _leading_whitespace_width(line.replace("\f", ""))
         item_match = REFERENCE_ITEM_RE.match(stripped)
-        if item_match:
+        starts_new = bool(item_match) or (
+            _is_reference_start(stripped) and (not current or indent <= current_indent + 1)
+        )
+        if starts_new:
             _flush_reference_item(items, current, current_start, current_end)
-            current = [item_match.group(1)]
+            current = [item_match.group(1) if item_match else stripped]
             current_start = line_number
             current_end = line_number
+            current_indent = indent
         elif current:
             current.append(stripped)
             current_end = line_number
@@ -352,6 +589,7 @@ def _extract_reference_lines(text: str) -> List[dict]:
             current = [stripped]
             current_start = line_number
             current_end = line_number
+            current_indent = indent
 
     _flush_reference_item(items, current, current_start, current_end)
     if not saw_reference_heading and not items:
@@ -390,10 +628,14 @@ def _extract_loose_reference_list(lines: List[str]) -> List[dict]:
             current_end = None
             continue
         item_match = REFERENCE_ITEM_RE.match(stripped)
-        if item_match:
+        indent = _leading_whitespace_width(line)
+        starts_new = bool(item_match) or (
+            current and _is_reference_start(stripped) and indent <= current_indent + 1
+        )
+        if starts_new:
             _flush_reference_item(items, current, current_start, current_end)
-            current = [item_match.group(1)]
-            current_indent = _leading_whitespace_width(line)
+            current = [item_match.group(1) if item_match else stripped]
+            current_indent = indent
             current_start = line_number
             current_end = line_number
         elif current and _leading_whitespace_width(line) > current_indent:
@@ -450,13 +692,14 @@ def _flush_reference_item(
     line_end: Optional[int] = None,
 ) -> None:
     text = _clean_reference_text(" ".join(parts))
-    if _looks_like_citation(text):
-        item: Dict[str, Any] = {"raw_text": text}
-        if line_start is not None:
-            item["source_line_start"] = line_start
-        if line_end is not None:
-            item["source_line_end"] = line_end
-        items.append(item)
+    for piece in _split_glued_references(text):
+        if _looks_like_citation(piece):
+            item: Dict[str, Any] = {"raw_text": piece}
+            if line_start is not None:
+                item["source_line_start"] = line_start
+            if line_end is not None:
+                item["source_line_end"] = line_end
+            items.append(item)
 
 
 def _candidate(
@@ -485,13 +728,17 @@ def _candidate(
     year = extract_year(raw_text)
     if year is not None:
         item["year"] = year
-    gbt = parse_gbt7714_reference(raw_text)
-    if gbt:
-        item["title"] = gbt["title"]
-        item["authors"] = list(gbt["authors"])
-        if gbt["venue"]:
-            item["venue"] = gbt["venue"]
-        item["reference_format"] = "gbt7714"
+    parsed = parse_structured_reference(raw_text)
+    if parsed:
+        item["title"] = parsed["title"]
+        item["authors"] = list(parsed["authors"])
+        if parsed.get("venue"):
+            item["venue"] = parsed["venue"]
+        if parsed.get("year") is not None:
+            item["year"] = parsed["year"]
+        item["reference_format"] = parsed.get("reference_format", "")
+        if parsed.get("gbt7714"):
+            item["gbt7714"] = parsed["gbt7714"]
     return item
 
 
@@ -516,13 +763,37 @@ def _clean_reference_text(text: str) -> str:
     text = re.sub(r"%.*", "", text)
     text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?", r"\1", text)
     text = text.replace("{", "").replace("}", "")
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    return _repair_wrapped_identifiers(text)
+
+
+def _repair_wrapped_identifiers(text: str) -> str:
+    """Join DOIs and URLs that PDF line wraps split with a space."""
+
+    text = re.sub(r"(https?://)\s+", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"(doi\.org/)\s+", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"(10\.\d{4,9}/)\s+", r"\1", text)
+
+    def join_doi_path(match: re.Match) -> str:
+        prefix = match.group(1)
+        rest = match.string[match.end() :]
+        if prefix.endswith(".") and re.match(r"[A-Z][a-z]", rest):
+            return match.group(0)
+        return prefix
+
+    return re.sub(r"(10\.\d{4,9}/\S*?[/._-])\s+(?=[A-Za-z0-9])", join_doi_path, text)
 
 
 def _looks_like_citation(text: str) -> bool:
     if len(text) < 20:
         return False
     if extract_doi(text) or extract_arxiv_id(text) or extract_year(text):
+        return True
+    if re.search(r"[\[［](?:EB|DB|CP|CM|DS|[JMCDRSPNAZG])(?:[/／](?:OL|CD|DK|MT))?[\]］]", text):
+        return True
+    if re.search(r"[\u4e00-\u9fff]", text) and re.search(r"[(（](?:19|20)\d{2}[)）]", text):
+        return True
+    if "《" in text and re.search(r"(?:19|20)\d{2}", text):
         return True
     return bool(re.search(r"\b(?:journal|proceedings|conference|arxiv|press)\b", text, re.IGNORECASE))
 

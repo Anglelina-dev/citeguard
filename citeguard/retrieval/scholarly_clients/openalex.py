@@ -115,6 +115,7 @@ class OpenAlexMetadataSource(MetadataSource):
         metadata = {
             "openalex_id": item.get("id", ""),
             "source_score": float(item.get("relevance_score", 0.0)),
+            "type": str(item.get("type") or ""),
             "cited_by_count": item.get("cited_by_count", 0),
             "open_access": {
                 "is_oa": bool(oa_info.get("is_oa") or best_oa_location.get("is_oa")),
