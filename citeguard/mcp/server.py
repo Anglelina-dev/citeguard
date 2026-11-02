@@ -43,6 +43,24 @@ __all__ = ["MAX_BATCH_ITEMS", "MAX_EVIDENCE_FILE_BYTES", "main", "mcp"]
 
 _MCP_IMPORT_ERROR: Optional[ImportError]
 
+
+def mcp_dependency_message(exc: Optional[BaseException] = None) -> str:
+    """Explain a missing or incompatible MCP SDK without hiding an mcp 2.x break."""
+
+    detail = str(exc or "")
+    if "FastMCP" in detail or "mcp 2" in detail.lower() or "MCPServer" in detail:
+        return (
+            "The installed mcp package is incompatible. CiteGuard requires the MCP SDK 1.x API "
+            '(FastMCP). Install it with `python -m pip install "mcp>=1.2,<2"`.'
+        )
+    return (
+        "The MCP server requires the optional MCP dependency. "
+        "Install published packages with `python -m pip install citationguard` "
+        "using Python 3.10 or newer. From a source checkout, use "
+        '`python -m pip install -e .` and `python -m pip install "mcp>=1.2,<2"`.'
+    )
+
+
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError as exc:  # pragma: no cover - exercised when the optional extra is missing.
@@ -61,12 +79,7 @@ except ImportError as exc:  # pragma: no cover - exercised when the optional ext
             return decorator
 
         def run(self) -> None:
-            raise RuntimeError(
-                "The MCP server requires the optional MCP dependency. "
-                "Install published packages with `python -m pip install citationguard` "
-                "using Python 3.10 or newer. From a source checkout, use "
-                "`python -m pip install -e .`."
-            )
+            raise RuntimeError(mcp_dependency_message(_MCP_IMPORT_ERROR))
 else:
     _MCP_IMPORT_ERROR = None
 
@@ -682,12 +695,7 @@ def audit_claim_support_tool(
 
 def main() -> None:
     if _MCP_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "The MCP server requires the optional MCP dependency. "
-            "Install published packages with `python -m pip install citationguard` "
-            "using Python 3.10 or newer. From a source checkout, use "
-            "`python -m pip install -e .`."
-        ) from _MCP_IMPORT_ERROR
+        raise RuntimeError(mcp_dependency_message(_MCP_IMPORT_ERROR)) from _MCP_IMPORT_ERROR
     mcp.run()
 
 

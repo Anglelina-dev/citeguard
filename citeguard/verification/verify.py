@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from citeguard.citation import CitationFormatter, author_coverage, sequence_similarity, year_matches
+from citeguard.citation import (
+    CitationFormatter,
+    author_coverage,
+    author_lists_comparable,
+    first_authors_match,
+    sequence_similarity,
+    year_matches,
+)
 from citeguard.graph import CitationRecord
 from citeguard.retrieval.scholarly_clients.base import MetadataSource
 from citeguard.retrieval.scholarly_clients.utils import base_arxiv_id, normalize_doi
@@ -24,14 +31,20 @@ def _field_diffs(candidate: CitationRecord, canonical: CitationRecord) -> List[F
     if candidate.metadata.get("title_explicit"):
         matches = sequence_similarity(candidate.title, canonical.title) >= TITLE_MATCH
         diffs.append(FieldDiff("title", candidate.title, canonical.title, matches))
-    if candidate.authors:
-        matches = author_coverage(candidate.authors, canonical.authors) >= AUTHOR_MATCH
+    if candidate.authors and canonical.authors:
+        if not author_lists_comparable(candidate.authors, canonical.authors):
+            matches = True
+        else:
+            matches = (
+                author_coverage(candidate.authors, canonical.authors) >= AUTHOR_MATCH
+                and first_authors_match(candidate.authors, canonical.authors)
+            )
         diffs.append(FieldDiff("authors", candidate.authors, canonical.authors, matches))
-    if candidate.year is not None:
+    if candidate.year is not None and canonical.year is not None:
         diffs.append(
             FieldDiff("year", candidate.year, canonical.year, year_matches(candidate.year, canonical.year))
         )
-    if candidate.venue:
+    if candidate.venue and canonical.venue:
         matches = sequence_similarity(candidate.venue, canonical.venue) >= VENUE_MATCH
         diffs.append(FieldDiff("venue", candidate.venue, canonical.venue, matches))
     if candidate.doi:
@@ -146,6 +159,14 @@ def verify_citation(
                 "The best match shows signs of a hijacked or mirror record; provide a DOI or arXiv id "
                 "to disambiguate."
             ),
+            "book_review": (
+                "The closest record looks like a review of the cited work rather than the work itself; "
+                "no corrected citation is suggested."
+            ),
+            "sparse_record": (
+                "The closest record repeats the title but has no author or year, so this is not a "
+                "confirmed match and no corrected citation is suggested."
+            ),
         }
         base_explanation = ambiguity_explanations.get(
             outcome.ambiguity_reason,
@@ -177,11 +198,23 @@ def verify_citation(
     mismatched = [diff.field for diff in diffs if not diff.matches]
     if mismatched:
         identifier_confirmed = identifier_status == "hit" or outcome.score >= 1.0
-        suggested = (
-            formatter.format_reference(outcome.best)
-            if (identifier_confirmed or not is_suspect_record(outcome.best))
-            else ""
+        doi_same = bool(
+            candidate.doi
+            and outcome.best.doi
+            and normalize_doi(candidate.doi) == normalize_doi(outcome.best.doi)
         )
+        # A DOI that resolves to a different title must not be "corrected" by
+        # replacing the cited title with the unrelated DOI target.
+        doi_title_conflict = "title" in mismatched and doi_same
+        suggested = ""
+        if not doi_title_conflict and (identifier_confirmed or not is_suspect_record(outcome.best)):
+            suggested = formatter.format_reference(outcome.best)
+        conflict_note = ""
+        if doi_title_conflict:
+            conflict_note = (
+                " The provided DOI resolves to a different work than the cited title;"
+                " no corrected citation is suggested."
+            )
         return VerificationResult(
             verdict=Verdict.METADATA_MISMATCH,
             confidence=_confidence_with_source_failures(outcome.score, failure_mode),
@@ -191,6 +224,7 @@ def verify_citation(
             suggested_citation=suggested,
             explanation=(
                 f"The paper exists, but these fields disagree with the canonical record: {', '.join(mismatched)}."
+                + conflict_note
                 + _source_failure_note(failure_mode, failed)
                 + miss_note
             ),
