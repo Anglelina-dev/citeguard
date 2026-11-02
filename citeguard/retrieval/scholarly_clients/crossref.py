@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import re
 from typing import Any, List, Optional
 from urllib.parse import quote
@@ -190,7 +189,7 @@ def _first_text(value: Any) -> str:
 def _text(value: Any) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set)):
         return ""
-    return html.unescape(str(value).strip())
+    return str(value).strip()
 
 
 def _issued_year(value: Any) -> Optional[int]:

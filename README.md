@@ -12,19 +12,7 @@
 
 LLM 写作助手会幻觉参考文献:编造不存在的论文、拼错真实论文的元数据、引用与论点无关的真论文。CiteGuard 扮演那个"多疑的审稿人":它把每条引用当作 `论点 → 引用 → 证据` 问题去**证伪**;拿不准的时候明确说"查不准",而不是猜一个答案。
 
-> **状态:** Alpha。上游 `v0.1.3` 已发布至 [PyPI](https://pypi.org/project/citationguard/) `citationguard` 与 [MCP 官方 registry](https://registry.modelcontextprotocol.io)。本 fork 的 `v0.2.0` 不发布到 PyPI。当前积极开发的产品面是 `citeguard.*` 审计包、CLI、MCP server、批量工作流、缓存回放与发布门禁;历史遗留的写作 agent 实验仅保留在源码签出中,不属于发布包。
-
-## Changes in this fork
-
-上游 CiteGuard（Wenyao Xu，https://github.com/xiaweiyi713/citeguard）提供了 v0.1.3 的审计库、CLI、MCP server、测试和文档。本仓库是 PAYATHON 学生队的 fork，0.2.0 中下面这些改动是我们的；MIT 许可证和原版权声明保留在 `LICENSE`，fork 的版权行写在旁边，没有替换原文。
-
-- 参考文献抽取：悬挂缩进的 APA/Chicago 条目不再粘成一条；宽空格双栏会按栏重排；中文参考文献段落会拆开；PDF/HTML 不再按 UTF-8 硬读。
-- 著录解析：APA/Chicago 责任者-年份，以及中文 `作者(年):标题，《期刊》`；GB/T 7714 接受全角括号和标点。DOI/URL 里的年份不再当成出版年，跨行折断的 DOI 会拼回去。
-- 核验：作者按姓和首字母比对，并且核对第一作者；DOI 指向另一篇论文时，改以题名对应的记录报告 DOI 错误，而不是把题名改成 DOI 那篇。书评记录不会被当成书本身的修正建议。
-- Crossref 题名和期刊名会解码 `&amp;` 这类 HTML 实体。
-- MCP SDK 限制为 `mcp>=1.2,<2`。2.x 移除了 `FastMCP`，不限制版本时 server 会在导入时崩溃。
-- PDF 按 pypdf 的阅读顺序取文本。按文字坐标的 y 排序会把双栏页面交错在一起。纯文本双栏（含只有右栏的行）会按栏重排。
-- 中文期刊 HTML 里没有空格的 APA（`Surname,I.(2011).Title.Journal`）和 Frontiers 页面的 `Surname I. ( 2007 ).` 会拆开并解析。目录里的 `References` 链接不再把正文当成参考文献。只有题名、没有作者和年份的记录保持 `ambiguous`，不把书评期刊论文当成书本身。
+> **状态:** Alpha(`v0.1.1`,已发布至 [PyPI](https://pypi.org/project/citationguard/) 与 [MCP 官方 registry](https://registry.modelcontextprotocol.io))。当前积极开发的产品面是 `citeguard.*` 审计包、CLI、MCP server、批量工作流、缓存回放与发布门禁;历史遗留的写作 agent 实验仅保留在源码签出中,不属于发布包。
 
 ---
 

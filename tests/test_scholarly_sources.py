@@ -893,20 +893,6 @@ class ScholarlySourceTests(unittest.TestCase):
             "missing_metadata_lowers_confidence_not_fabrication_evidence",
         )
 
-    def test_crossref_unescapes_html_entities_in_title_and_venue(self):
-        source = CrossrefMetadataSource(harvest_evidence=False)
-        record = source._to_record(
-            {
-                "title": ["Journalism &amp; Society"],
-                "container-title": ["Journalism &amp; Mass Communication Quarterly"],
-                "author": [{"given": "Ada", "family": "Lovelace"}],
-                "issued": {"date-parts": [[2020]]},
-                "DOI": "10.5555/amp",
-            }
-        )
-        self.assertEqual(record.title, "Journalism & Society")
-        self.assertEqual(record.venue, "Journalism & Mass Communication Quarterly")
-
     def test_crossref_lookup_normalizes_common_doi_resolver_prefixes(self):
         http_client = CrossrefLookupHTTPClient()
         source = CrossrefMetadataSource(http_client=http_client, harvest_evidence=False)

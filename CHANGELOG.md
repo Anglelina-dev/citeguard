@@ -2,43 +2,6 @@
 
 ## Unreleased
 
-## 0.2.0 - 2026-11-02
-
-Fork release by the PAYATHON student team, based on upstream CiteGuard 0.1.3
-(Wenyao Xu, https://github.com/xiaweiyi713/citeguard). The original MIT
-copyright notice is unchanged. This version is not published to PyPI.
-
-- Reference extraction now keeps hanging-indent APA/Chicago entries separate,
-  reflows wide two-column reference blocks, splits glued Chinese bibliographies,
-  and reads PDF and HTML manuscripts without treating them as UTF-8 text.
-- Wrapped DOIs such as `10.1080/` + `1461670X.2023.2192295` are rejoined, and
-  publication years are no longer taken from a year that appears only inside a
-  DOI or URL.
-- Free-text parsing now covers APA/Chicago author-date references and Chinese
-  `作者(年):标题，《期刊》` entries, plus fullwidth GB/T 7714 punctuation
-  (`［J］`, `，`, `．`).
-- Author comparison uses surname and initials, and the cited first author must
-  match the record's first author. A DOI that resolves to a different title no
-  longer short-circuits verification, so a wrong DOI is reported against the
-  paper the citation actually names. Book-review records are not offered as a
-  corrected citation for the book.
-- Crossref titles and venues unescape HTML entities such as `&amp;`.
-- The MCP dependency is pinned to `mcp>=1.2,<2` because MCP SDK 2.x removed
-  `FastMCP` and the server failed on import.
-- PDF text follows pypdf's reading order. Sorting by raw text-matrix coordinates
-  interleaved two-column pages, so reference lines were mixed with the article
-  body and with the opposite column.
-- Plain-text two-column bibliographies reflow on a consistent gutter, including
-  lines that contain only the right column.
-- Space-stripped APA used by Chinese journal HTML (`Surname,I.(2011).Title.Journal`)
-  and Frontiers HTML (`Surname I. M. ( 2007 ). Title`) are split and parsed.
-  A contents-page `References` link no longer makes the article body look like
-  the bibliography. A wrapped DOI such as `10.1177/…` is not treated as
-  numbered reference 10.
-- A record that repeats a title but has no author and no year stays
-  `ambiguous` instead of a confident miss. A journal article that reuses a
-  book title under a different first author is not offered as the book.
-
 ## 0.1.3 - 2026-07-15
 
 - Documented the release-gated documentation contract

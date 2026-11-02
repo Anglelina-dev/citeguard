@@ -366,16 +366,13 @@ def _read_pdf_text(
     command: str = "",
     citation_index: Optional[int] = None,
 ) -> str:
-    _load_pdf_reader(index=index, command=command, citation_index=citation_index)
-    from citeguard.verification.extract import read_pdf_text
-
+    reader_cls = _load_pdf_reader(index=index, command=command, citation_index=citation_index)
     try:
-        return read_pdf_text(path)
-    except OSError as exc:
-        message = str(exc)
-        code = "invalid_input" if "pypdf" in message else "file_error"
+        reader = reader_cls(path)
+        return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception as exc:
         raise CLIUsageError(
-            code,
+            "file_error",
             f"Could not extract text from PDF full-text file {path!r}: {exc}",
             details=_error_details(
                 "full_text_file",
@@ -384,7 +381,6 @@ def _read_pdf_text(
                 citation_index=citation_index,
                 filename=path,
                 format="pdf",
-                dependency="pypdf" if "pypdf" in message else "",
             ),
         ) from exc
 

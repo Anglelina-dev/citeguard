@@ -12,19 +12,7 @@
 
 LLM writing assistants hallucinate references: they invent papers, stitch together wrong metadata, and cite real papers that don't support the claim. CiteGuard is the skeptical reviewer that catches this — the check an agent can't reliably do on its own. It treats every citation as a `claim → citation → evidence` problem and tries to *disprove* it; when it can't be sure, it says so instead of guessing.
 
-> **Status:** Alpha. Upstream `v0.1.3` is published on [PyPI](https://pypi.org/project/citationguard/) as `citationguard` and the [official MCP registry](https://registry.modelcontextprotocol.io). This fork's `v0.2.0` is not published to PyPI. The actively developed product surface is the `citeguard.*` auditor package, CLI, MCP server, batch workflows, cache replay, and release gates. Historical writing-agent experiments remain in source checkouts for context, but they are not part of the published package surface.
-
-## Changes in this fork
-
-Upstream CiteGuard (Wenyao Xu, https://github.com/xiaweiyi713/citeguard) supplied the v0.1.3 auditor, CLI, MCP server, tests, and docs. This repository is the PAYATHON student team's fork. The 0.2.0 changes below are ours. The MIT license and the original copyright notice stay in `LICENSE`; the fork copyright line is added beside them.
-
-- Reference extraction keeps hanging-indent APA/Chicago entries separate, reflows wide two-column blocks, splits glued Chinese bibliographies, and reads PDF/HTML without a UTF-8 crash.
-- Parsing covers APA/Chicago author-date references and Chinese `作者(年):标题，《期刊》` entries, including fullwidth GB/T 7714 punctuation. Years inside a DOI or URL are ignored, and line-wrapped DOIs are rejoined.
-- Verification compares authors by surname and initials, requires the cited first author to match, and reports a DOI that points at a different paper against the work named by the title. Book-review records are not suggested as a correction for the book.
-- Crossref titles and venues unescape HTML entities such as `&amp;`.
-- The MCP SDK is pinned to `mcp>=1.2,<2`. MCP 2.x removed `FastMCP`, so an unpinned install crashed the server on import.
-- PDF text follows pypdf's reading order. Sorting by raw text-matrix y interleaved two-column pages. Plain-text two-column bibliographies, including right-column-only lines, are reflowed.
-- Space-stripped APA from Chinese journal HTML (`Surname,I.(2011).Title.Journal`) and Frontiers pages (`Surname I. ( 2007 ).`) are split and parsed. A contents-page `References` link no longer treats the article body as the bibliography. A title-only record with no author and no year stays `ambiguous`, and a journal article that reuses a book title is not suggested as the book.
+> **Status:** Alpha (`v0.1.1`, published on [PyPI](https://pypi.org/project/citationguard/) and the [official MCP registry](https://registry.modelcontextprotocol.io)). The actively developed product surface is the `citeguard.*` auditor package, CLI, MCP server, batch workflows, cache replay, and release gates. Historical writing-agent experiments remain in source checkouts for context, but they are not part of the published package surface.
 
 ---
 

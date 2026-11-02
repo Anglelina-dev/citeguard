@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-import re
 import socket
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from citeguard.citation import author_coverage, first_authors_match, sequence_similarity, year_matches
+from citeguard.citation import author_coverage, sequence_similarity, year_matches
 from citeguard.graph import CitationRecord
 from citeguard.retrieval.scholarly_clients.base import MetadataSource
 from citeguard.retrieval.scholarly_clients.multi_source import MultiSourceMetadataSource
@@ -17,9 +16,6 @@ from citeguard.retrieval.scholarly_clients.utils import base_arxiv_id, normalize
 
 STRONG_MATCH = 0.70
 AMBIGUOUS_MARGIN = 0.05
-IDENTIFIER_TITLE_CONFLICT = 0.55
-_REVIEW_TITLE_RE = re.compile(r"^(?:book review|review of)\b", re.IGNORECASE)
-_REVIEW_CITATION_RE = re.compile(r"\b(?:book review|review of)\b", re.IGNORECASE)
 
 DEFAULT_SUSPECT_DOI_PREFIXES = ("10.65215",)
 
@@ -61,92 +57,21 @@ class ResolveOutcome:
     ambiguity_reason: str = ""
 
 
-def titles_conflict(candidate: CitationRecord, record: CitationRecord) -> bool:
-    """True when an explicit cited title clearly names a different work than ``record``."""
+def verification_match_score(candidate: CitationRecord, record: CitationRecord) -> float:
+    """Title-dominant match score suited to verification (DOI/arXiv are definitive)."""
 
-    if not candidate.metadata.get("title_explicit"):
-        return False
-    if not candidate.title or not record.title:
-        return False
-    return sequence_similarity(candidate.title, record.title) < IDENTIFIER_TITLE_CONFLICT
-
-
-def _identifier_same(candidate: CitationRecord, record: CitationRecord) -> bool:
     if candidate.doi and record.doi and normalize_doi(candidate.doi) == normalize_doi(record.doi):
-        return True
-    return bool(
+        return 1.0
+    if (
         candidate.arxiv_id
         and record.arxiv_id
         and base_arxiv_id(candidate.arxiv_id) == base_arxiv_id(record.arxiv_id)
-    )
-
-
-def is_book_review_record(record: CitationRecord) -> bool:
-    record_type = str((record.metadata or {}).get("type") or "").lower().replace("_", "-")
-    if record_type in {"book-review", "book review"}:
-        return True
-    return bool(_REVIEW_TITLE_RE.match((record.title or "").strip()))
-
-
-def citation_looks_like_review(candidate: CitationRecord) -> bool:
-    text = f"{candidate.title} {candidate.metadata.get('raw_text', '')}"
-    return bool(_REVIEW_CITATION_RE.search(text))
-
-
-def citation_looks_like_book(candidate: CitationRecord) -> bool:
-    """True for a publisher citation that is not already pinned by a DOI or arXiv id."""
-
-    if candidate.doi or candidate.arxiv_id:
-        return False
-    blob = f"{candidate.venue} {candidate.metadata.get('raw_text', '')}".lower()
-    return any(token in blob for token in (" press", "出版社", "publisher"))
-
-
-def unwanted_book_review(candidate: CitationRecord, record: CitationRecord) -> bool:
-    """A review record should not stand in for the book it reviews."""
-
-    if citation_looks_like_review(candidate):
-        return False
-    record_type = str((record.metadata or {}).get("type") or "").lower().replace("_", "-")
-    if (
-        citation_looks_like_book(candidate)
-        and record_type in {"journal-article", "article"}
-        and candidate.authors
-        and record.authors
-        and not first_authors_match(candidate.authors, record.authors)
-        and sequence_similarity(candidate.title, record.title) >= 0.85
     ):
-        return True
-    if not is_book_review_record(record):
-        return False
-    if candidate.authors and first_authors_match(candidate.authors, record.authors) and author_coverage(
-        candidate.authors, record.authors
-    ) >= 0.5:
-        return False
-    return True
-
-
-def verification_match_score(candidate: CitationRecord, record: CitationRecord) -> float:
-    """Title-dominant match score suited to verification (DOI/arXiv are definitive).
-
-    An identifier hit whose title clearly names a different work does not
-    short-circuit to 1.0, so a title search can still surface the cited paper.
-    """
-
-    if _identifier_same(candidate, record) and not titles_conflict(candidate, record):
         return 1.0
     title = sequence_similarity(candidate.title, record.title)
-    # Missing author or year on the record is unknown, not a disagreement.
-    # Penalizing it dropped exact book titles under the match threshold.
-    weighted = [(0.70, title)]
-    if candidate.authors and record.authors:
-        weighted.append((0.18, author_coverage(candidate.authors, record.authors)))
-    if candidate.year is not None and record.year is not None:
-        weighted.append((0.12, 1.0 if year_matches(candidate.year, record.year) else 0.0))
-    total = sum(weight for weight, _value in weighted)
-    if total <= 0:
-        return 0.0
-    return sum(weight * value for weight, value in weighted) / total
+    author = author_coverage(candidate.authors, record.authors)
+    year = 1.0 if year_matches(candidate.year, record.year) else 0.0
+    return 0.70 * title + 0.18 * author + 0.12 * year
 
 
 def source_names(source: MetadataSource) -> List[str]:
@@ -227,37 +152,6 @@ def _identifier_authority(candidate: CitationRecord, source: MetadataSource):
     return info, None
 
 
-def _prefer_resolved_record(
-    candidate: CitationRecord,
-    scored: List[Tuple[float, CitationRecord]],
-    authority_record: Optional[CitationRecord],
-) -> Tuple[float, CitationRecord]:
-    """Prefer the work named by the citation over a conflicting DOI hit or a book review."""
-
-    best_score, best = scored[0]
-    if authority_record is not None and titles_conflict(candidate, authority_record):
-        titled = [
-            (score, record)
-            for score, record in scored
-            if record.citation_id != authority_record.citation_id
-            and score >= STRONG_MATCH
-            and not titles_conflict(candidate, record)
-        ]
-        if titled:
-            best_score, best = titled[0]
-        else:
-            best_score, best = 1.0, authority_record
-    if unwanted_book_review(candidate, best):
-        non_reviews = [
-            (score, record)
-            for score, record in scored
-            if not is_book_review_record(record) and sequence_similarity(candidate.title, record.title) >= 0.85
-        ]
-        if non_reviews:
-            best_score, best = max(non_reviews, key=lambda item: item[0])
-    return best_score, best
-
-
 def resolve_citation(candidate: CitationRecord, source: MetadataSource) -> ResolveOutcome:
     checked = source_names(source)
     query = candidate.title or candidate.metadata.get("raw_text", "")
@@ -266,7 +160,6 @@ def resolve_citation(candidate: CitationRecord, source: MetadataSource) -> Resol
 
     results: List[CitationRecord] = []
     identifier_info: Optional[Dict[str, Any]] = None
-    authority_record: Optional[CitationRecord] = None
     authority = _identifier_authority(candidate, source)
     if authority is not None:
         identifier_info, authority_record = authority
@@ -333,8 +226,8 @@ def resolve_citation(candidate: CitationRecord, source: MetadataSource) -> Resol
             ambiguity_reason="",
         )
 
-    best_score, best = _prefer_resolved_record(candidate, scored, authority_record)
-    alternatives = [record for _, record in scored if record.citation_id != best.citation_id][:3]
+    best_score, best = scored[0]
+    alternatives = [record for _, record in scored[1:4]]
     ambiguous = (
         best_score >= STRONG_MATCH
         and len(scored) > 1
@@ -349,18 +242,6 @@ def resolve_citation(candidate: CitationRecord, source: MetadataSource) -> Resol
             ambiguous, ambiguity_reason = True, "year_conflict"
         elif best is not None and is_suspect_record(best):
             ambiguous, ambiguity_reason = True, (ambiguity_reason or "suspect_record")
-    if (
-        best is not None
-        and best_score >= STRONG_MATCH
-        and candidate.authors
-        and not best.authors
-        and candidate.year is not None
-        and best.year is None
-        and not (candidate.doi or candidate.arxiv_id)
-    ):
-        ambiguous, ambiguity_reason = True, "sparse_record"
-    if best is not None and unwanted_book_review(candidate, best):
-        ambiguous, ambiguity_reason = True, "book_review"
     return ResolveOutcome(
         best=best,
         score=best_score,

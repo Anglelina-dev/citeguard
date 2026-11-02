@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citationguard"
-version = "0.2.0"
+version = "0.1.3"
 description = "A skeptical citation auditor for agent writing workflows."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -42,7 +42,7 @@ dependencies = [
   # MCP Registry clients install the base distribution rather than an extra.
   # Keep Python 3.9 usable for the library while installing the SDK wherever
   # its supported Python runtime is available.
-  "mcp>=1.2,<2; python_version >= '3.10'",
+  "mcp>=1.2; python_version >= '3.10'",
 ]
 
 [project.urls]

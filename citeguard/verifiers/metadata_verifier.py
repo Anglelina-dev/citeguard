@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from citeguard.citation import (
-    author_coverage,
-    author_lists_comparable,
-    first_authors_match,
-    sequence_similarity,
-    year_matches,
-)
+from citeguard.citation import author_coverage, sequence_similarity, year_matches
 from citeguard.graph import CitationRecord, Claim, VerificationFinding
 
 from citeguard.citation.proposer import CandidateCitation
@@ -43,15 +37,7 @@ class MetadataVerifier:
         ) else 0.5
         score = 0.45 * title_score + 0.25 * author_score + 0.15 * year_score + 0.15 * venue_score
 
-        if not candidate.citation.authors or (
-            canonical.authors and not author_lists_comparable(candidate.citation.authors, canonical.authors)
-        ):
-            authors_ok = True
-        else:
-            authors_ok = author_score >= 0.5 and first_authors_match(
-                candidate.citation.authors, canonical.authors
-            )
-        passed = title_score >= 0.9 and authors_ok
+        passed = title_score >= 0.9 and (author_score >= 0.5 or not candidate.citation.authors)
         reason = (
             "Candidate metadata aligns with the canonical record."
             if passed
